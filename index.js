@@ -915,7 +915,58 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// 4. Información del servicio
+// 4. Endpoint de verificación de versión
+app.get('/version', (req, res) => {
+  res.json({
+    version: '1.6.0-regex',
+    timestamp: new Date().toISOString(),
+    features: {
+      regex: true,
+      preprocesador: true,
+      python: false,
+      gpt35: false,
+      gpt4: true
+    },
+    message: 'Versión con Regex para Sermat implementada',
+    flujo: 'Regex → Preprocesador → GPT-4',
+    costo_regex: '$0.00',
+    costo_preprocesador: '$0.00'
+  });
+});
+
+// 5. Endpoint de test directo para Sermat
+app.post('/test-sermat-direct', (req, res) => {
+  try {
+    // Texto hardcodeado de Sermat para test directo
+    const testText = `12-45 12x45 D 38 56 350 Clio mio-palio 8v-Ford ka $ 66.791
+12-55 12x55 D 51 90 430 P 208/308/207/307 - Fiat Argo $ 77.873
+12-65 12X65 D/I 45 70 430 Focus, Gol trend, Voyager $ 75.008
+12-70 12X70 STD 54 83 450 Peugeot-Citroën-Partner-Berlingo $ 83.631
+NS40 H Fit D 30 41 260 Honda Fit/ City - Hyundai I10 SIN STOCK
+VOLTA 50 VOLTA 50 D 45 70 400 Universal - múltiples aplicaciones $ 89.500`;
+    
+    console.log('[TEST-DIRECT] Probando regex con texto hardcodeado de Sermat');
+    const productos = extractSermatWithRegex(testText);
+    
+    res.json({
+      test: 'sermat-direct',
+      encontrados: productos.length,
+      productos: productos,
+      timestamp: new Date().toISOString(),
+      metodo: 'Regex patterns (gratis)'
+    });
+    
+  } catch (error) {
+    console.error('[TEST-DIRECT] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      test: 'sermat-direct'
+    });
+  }
+});
+
+// 6. Información del servicio
 app.get('/', (req, res) => {
   res.json({
     service: 'PDF to Excel Microservice - GPT-4 Optimized',
@@ -924,7 +975,9 @@ app.get('/', (req, res) => {
     endpoints: {
       'POST /extract-pdf': 'Extraer productos de PDF (Regex → Preprocesador → GPT-4)',
       'POST /test-regex': 'Probar solo extracción con Regex (gratis)',
+      'POST /test-sermat-direct': 'Test directo con texto hardcodeado de Sermat',
       'POST /test-extract': 'Probar extracción con datos de ejemplo',
+      'GET /version': 'Verificar versión y features implementadas',
       'GET /health': 'Estado del servicio y conexión OpenAI',
       'GET /': 'Información del servicio'
     },
@@ -954,7 +1007,9 @@ app.listen(PORT, () => {
   console.log(`\n📋 Endpoints disponibles:`);
   console.log(`   POST /extract-pdf - Extracción principal (Regex → Preprocesador → GPT-4)`);
   console.log(`   POST /test-regex - Probar solo Regex (GRATIS)`);
+  console.log(`   POST /test-sermat-direct - Test directo Sermat (GRATIS)`);
   console.log(`   POST /test-extract - Prueba con datos de ejemplo`);
+  console.log(`   GET /version - Verificar versión y features`);
   console.log(`   GET /health - Estado del servicio`);
   console.log(`   GET / - Información del servicio\n`);
 });
