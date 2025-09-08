@@ -1,4 +1,4 @@
-// index.js - MICROSERVICIO OPTIMIZADO CON MEJORAS DEL ESPECIALISTA
+// index.js - MICROSERVICIO CON GPT-4 PARA TABLAS COMPLEJAS
 const express = require('express');
 const OpenAI = require('openai');
 const cors = require('cors');
@@ -16,11 +16,11 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// Schema estructurado optimizado
+// Schema estructurado para GPT-4
 const SCHEMA_PRODUCTOS = {
   type: "json_schema",
   json_schema: {
-    name: "extraccion_productos_pdf",
+    name: "extraccion_productos_tabla_compleja",
     strict: true,
     schema: {
       type: "object",
@@ -35,7 +35,9 @@ const SCHEMA_PRODUCTOS = {
               precio: { type: "number" },
               stock: { type: "number" },
               unidad: { type: "string" },
-              categoria: { type: "string" }
+              categoria: { type: "string" },
+              aplicacion: { type: "string" },
+              contenido: { type: "string" }
             },
             required: ["codigo", "descripcion", "precio", "stock", "unidad"],
             additionalProperties: false
@@ -49,7 +51,8 @@ const SCHEMA_PRODUCTOS = {
               type: "string",
               enum: ["alta", "media", "baja"]
             },
-            metodoProcesamiento: { type: "string" }
+            metodoProcesamiento: { type: "string" },
+            tipoTabla: { type: "string" }
           },
           required: ["totalProductos", "calidadExtraccion", "metodoProcesamiento"],
           additionalProperties: false
@@ -65,7 +68,7 @@ const SCHEMA_PRODUCTOS = {
 // FUNCIONES HELPER OPTIMIZADAS
 // ============================================
 
-function chunkText(txt, max = 12000) {
+function chunkText(txt, max = 15000) {
   const out = [];
   for (let i = 0; i < txt.length; i += max) {
     out.push(txt.slice(i, i + max));
@@ -77,7 +80,7 @@ function normalizeProducto(p) {
   const u = (p.unidad || "").toUpperCase().trim();
   const codigo = (p.codigo || "").toUpperCase().replace(/\s+/g, '');
   
-  // Normalizar precios es-AR y quitar símbolos
+  // Normalizar precios argentinos y quitar símbolos
   let precio = p.precio;
   if (typeof precio === "string") {
     precio = precio
@@ -120,7 +123,7 @@ async function extraerTextoDePDF(pdfBase64) {
     const data = await pdfParse(pdfBuffer, {
       normalizeWhitespace: true,
       disableCombineTextItems: false,
-      max: 10
+      max: 15 // Procesar más páginas con GPT-4
     });
     
     if (!data.text || data.text.length < 50) {
@@ -128,6 +131,11 @@ async function extraerTextoDePDF(pdfBase64) {
     }
     
     console.log(`Texto extraído: ${data.text.length} caracteres, ${data.numpages} páginas`);
+    
+    // Log de muestra del texto para debug
+    console.log('Muestra del texto extraído:');
+    console.log(data.text.substring(0, 500) + '...');
+    
     return data.text;
     
   } catch (error) {
@@ -137,7 +145,7 @@ async function extraerTextoDePDF(pdfBase64) {
 }
 
 // ============================================
-// RUTA PRINCIPAL OPTIMIZADA
+// RUTA PRINCIPAL CON GPT-4
 // ============================================
 
 app.post('/extract-pdf', async (req, res) => {
@@ -164,31 +172,57 @@ app.post('/extract-pdf', async (req, res) => {
     }
     
     console.log(`[${requestId}] Procesando: ${filename || 'documento.pdf'}`);
-    console.log(`[${requestId}] Tamaño base64: ${pdfBase64.length} caracteres`);
     
     // PASO 1: Extraer texto del PDF
     const textoExtraido = await extraerTextoDePDF(pdfBase64);
     
-    // PASO 2: Procesar con GPT usando chunking
-    console.log(`[${requestId}] Enviando texto a LLM (chunking)...`);
-    const chunks = chunkText(textoExtraido, 12000);
+    // PASO 2: Procesar con GPT-4 usando chunking optimizado
+    console.log(`[${requestId}] Enviando texto a GPT-4 (chunking optimizado)...`);
+    const chunks = chunkText(textoExtraido, 15000); // Chunks más grandes para GPT-4
     const productosAgg = [];
     let calidadAgg = "baja";
     
     for (let idx = 0; idx < chunks.length; idx++) {
       console.log(`[${requestId}] Procesando chunk ${idx + 1}/${chunks.length}`);
       
-      const promptUsuario = `Archivo: ${filename || 'documento.pdf'}\n\n` +
-        `TEXTO (fragmento ${idx + 1}/${chunks.length}):\n` +
-        chunks[idx] + `\n\n` +
-        `Instrucciones: extrae SOLO productos completos según el schema.`;
+      const promptUsuario = `Archivo: ${filename || 'documento.pdf'}
+
+TEXTO DEL PDF (fragmento ${idx + 1}/${chunks.length}):
+${chunks[idx]}
+
+INSTRUCCIONES ESPECÍFICAS:
+Analiza este texto que proviene de una lista de precios o catálogo de productos.
+Busca especialmente:
+- Códigos de producto (números o alfanuméricos)
+- Descripciones de productos 
+- Precios (pueden estar en formato argentino con puntos de miles y coma decimal)
+- Cantidades o stock
+- Unidades de medida
+- Aplicaciones o usos
+
+Extrae TODOS los productos que encuentres, incluso si la tabla tiene muchas columnas.
+Respeta estrictamente el schema JSON requerido.`;
 
       const resp = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-4-turbo-preview", // GPT-4 para tablas complejas
         messages: [
           { 
             role: "system", 
-            content: "Eres un extractor que responde exclusivamente en JSON válido, siguiendo estrictamente el schema."
+            content: `Eres un extractor experto especializado en listas de precios y catálogos complejos.
+
+ESPECIALIDADES:
+- Tablas con múltiples columnas (código, descripción, función, aplicación, contenido, precio)
+- Listas de productos técnicos e industriales
+- Formatos de precios argentinos (1.234,56)
+- Códigos alfanuméricos de productos
+- Descripciones técnicas detalladas
+
+REGLAS ESTRICTAS:
+- Extrae TODOS los productos visibles en el texto
+- No inventes datos que no estén en el texto
+- Responde exclusivamente en JSON válido siguiendo el schema
+- Si encuentras muchos productos, inclúyelos todos
+- Evalúa la calidad de extracción honestamente`
           },
           { 
             role: "user", 
@@ -196,7 +230,7 @@ app.post('/extract-pdf', async (req, res) => {
           }
         ],
         response_format: SCHEMA_PRODUCTOS,
-        max_tokens: 4000,
+        max_tokens: 6000, // Más tokens para respuestas largas
         temperature: 0.0
       });
 
@@ -213,12 +247,21 @@ app.post('/extract-pdf', async (req, res) => {
       }
       
       console.log(`[${requestId}] Chunk ${idx + 1}: ${prods.length} productos encontrados`);
+      
+      // Log de algunos productos para debug
+      if (prods.length > 0) {
+        console.log(`[${requestId}] Ejemplos de productos en chunk ${idx + 1}:`);
+        prods.slice(0, 2).forEach(p => {
+          console.log(`  - ${p.codigo}: ${p.descripcion?.substring(0, 40)}... - $${p.precio}`);
+        });
+      }
     }
 
     // Dedupe por codigo + descripcion
     const dedup = new Map();
     for (const p of productosAgg) {
       if (!p.codigo || !p.descripcion || !Number.isFinite(p.precio) || !Number.isFinite(p.stock) || !p.unidad) {
+        console.log(`[${requestId}] Producto incompleto descartado: ${JSON.stringify(p)}`);
         continue;
       }
       const key = `${p.codigo}::${p.descripcion.trim().toLowerCase()}`;
@@ -233,7 +276,8 @@ app.post('/extract-pdf', async (req, res) => {
       metadatos: {
         totalProductos: productos.length,
         calidadExtraccion: productos.length ? calidadAgg : "baja",
-        metodoProcesamiento: "LLM structured output (chunked)"
+        metodoProcesamiento: "GPT-4 turbo + chunking optimizado",
+        tipoTabla: "Lista de precios compleja"
       }
     };
     
@@ -243,12 +287,17 @@ app.post('/extract-pdf', async (req, res) => {
     console.log(`[${requestId}] Productos finales: ${productos.length}`);
     console.log(`[${requestId}] Calidad: ${resultado.metadatos.calidadExtraccion}`);
     
-    // Log de primeros productos para debug
+    // Log detallado de productos extraídos
     if (productos.length > 0) {
-      console.log(`[${requestId}] Primeros productos extraídos:`);
-      productos.slice(0, 3).forEach((p, i) => {
-        console.log(`  ${i+1}: ${p.codigo} - ${p.descripcion?.substring(0, 30)} - $${p.precio}`);
+      console.log(`[${requestId}] Productos extraídos exitosamente:`);
+      productos.slice(0, 5).forEach((p, i) => {
+        console.log(`  ${i+1}: ${p.codigo} - ${p.descripcion?.substring(0, 50)} - $${p.precio} - Stock: ${p.stock}`);
       });
+      if (productos.length > 5) {
+        console.log(`  ... y ${productos.length - 5} productos más`);
+      }
+    } else {
+      console.log(`[${requestId}] ⚠️ No se encontraron productos válidos`);
     }
     
     // Validación antes de responder
@@ -263,15 +312,16 @@ app.post('/extract-pdf', async (req, res) => {
         timeMs: processingTime,
         filename: filename || 'documento.pdf',
         timestamp: new Date().toISOString(),
-        metodo: 'GPT-4o-mini + chunking',
+        metodo: 'GPT-4 turbo + chunking optimizado',
         requestId: requestId,
-        chunks: chunks.length
+        chunks: chunks.length,
+        textLength: textoExtraido.length
       }
     });
     
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error(`[${requestId}] Error en extracción:`, error);
+    console.error(`[${requestId}] ❌ Error en extracción:`, error);
     
     // Respuesta de error estructurada
     res.status(500).json({
@@ -288,7 +338,7 @@ app.post('/extract-pdf', async (req, res) => {
       processing: {
         timeMs: processingTime,
         timestamp: new Date().toISOString(),
-        metodo: 'Error en procesamiento',
+        metodo: 'Error en procesamiento GPT-4',
         requestId: requestId
       }
     });
@@ -296,36 +346,36 @@ app.post('/extract-pdf', async (req, res) => {
 });
 
 // ============================================
-// ENDPOINT DE PRUEBA OPTIMIZADO
+// ENDPOINT DE PRUEBA CON GPT-4
 // ============================================
 
 app.post('/test-extract', async (req, res) => {
   const textoEjemplo = `
-LISTA DE PRODUCTOS - FERRETERÍA
+LISTADO DE PRODUCTOS MAYORISTA - ADITIVOS
 
-CÓDIGO    DESCRIPCIÓN                     PRECIO    STOCK   UNIDAD
-ABC001    Martillo carpintero 500g        $1.250,50    25      UN
-ABC002    Tornillos autorroscantes 3x20   $850,75     100     CAJA
-ABC003    Pintura látex blanca 4 litros   $2.890,00    15     LT
-DEF004    Taladro eléctrico 650W          $15.450,25    8     UN
-DEF005    Cable eléctrico 2.5mm x metro   $125,80     500     MT
+CÓDIGO    DESCRIPCIÓN                     FUNCIÓN              APLICACIÓN    CONT    PRECIO
+2124      Injection Reiniger             limpieza inyectores  universal     300 ml  14.189
+1870      Pro-Line Fuel System Cleaner   limpieza inyectores  intensivo     300 ml  22.320
+2603      Ventil Sauber                   limpieza válvulas    universal     150 ml  18.069
+6931      Catalytic System Cleaner        limpieza catalizador universal     300 ml  19.665
+2123      mtx Vergaser Reiniger           limpieza carburador  universal     300 ml  21.734
   `;
   
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4-turbo-preview",
       messages: [
         {
           role: "system",
-          content: "Eres un extractor que responde exclusivamente en JSON válido, siguiendo estrictamente el schema."
+          content: "Eres un extractor experto que responde exclusivamente en JSON válido, siguiendo estrictamente el schema para listas de precios complejas."
         },
         {
           role: "user", 
-          content: `Extrae productos del siguiente texto:\n\n${textoEjemplo}`
+          content: `Extrae todos los productos de esta lista de precios:\n\n${textoEjemplo}`
         }
       ],
       response_format: SCHEMA_PRODUCTOS,
-      max_tokens: 2000,
+      max_tokens: 3000,
       temperature: 0.0
     });
     
@@ -341,7 +391,7 @@ DEF005    Cable eléctrico 2.5mm x metro   $125,80     500     MT
         productos: productosNormalizados
       },
       test: true,
-      modelo: "gpt-4o-mini"
+      modelo: "gpt-4-turbo-preview"
     });
     
   } catch (error) {
@@ -365,20 +415,20 @@ app.get('/health', async (req, res) => {
     
     res.json({
       status: 'OK',
-      service: 'PDF Microservice Optimized',
-      version: '1.2.0',
+      service: 'PDF Microservice GPT-4 Optimized',
+      version: '1.3.0',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       openai: {
         configured: !!process.env.OPENAI_API_KEY,
         connected: !!testResponse,
-        model: 'gpt-4o-mini'
+        model: 'gpt-4-turbo-preview'
       }
     });
   } catch (error) {
     res.status(503).json({
       status: 'ERROR',
-      service: 'PDF Microservice Optimized',
+      service: 'PDF Microservice GPT-4 Optimized',
       error: error.message,
       openai: {
         configured: !!process.env.OPENAI_API_KEY,
@@ -390,27 +440,26 @@ app.get('/health', async (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    service: 'PDF to Excel Microservice - Optimized',
-    version: '1.2.0',
-    description: 'Microservicio optimizado con mejoras del especialista',
+    service: 'PDF to Excel Microservice - GPT-4 Optimized',
+    version: '1.3.0',
+    description: 'Microservicio con GPT-4 para tablas complejas de productos',
     endpoints: {
-      'POST /extract-pdf': 'Extraer productos de PDF (producción)',
-      'POST /test-extract': 'Probar extracción con texto de ejemplo',
-      'GET /health': 'Estado del servicio con verificación OpenAI',
+      'POST /extract-pdf': 'Extraer productos de PDF con GPT-4',
+      'POST /test-extract': 'Probar extracción con datos de ejemplo',
+      'GET /health': 'Estado del servicio',
       'GET /': 'Información del servicio'
     },
     optimizaciones: [
-      'GPT-4o-mini (más rápido y económico)',
-      'Chunking de texto para documentos grandes',
+      'GPT-4 turbo para tablas complejas',
+      'Chunks de 15000 caracteres',
+      'Prompts especializados en listas de precios',
       'Normalización de precios argentinos',
-      'Deduplicación de productos',
-      'Validación robusta de entrada',
-      'Logs con requestId para trazabilidad',
-      'Manejo mejorado de errores'
+      'Deduplicación inteligente',
+      'Logs detallados con requestId',
+      'Manejo robusto de múltiples columnas'
     ],
-    modelo: 'gpt-4o-mini',
-    chunking: true,
-    normalizacion: 'Precios argentinos soportados'
+    modelo: 'gpt-4-turbo-preview',
+    especializado: 'Listas de precios y catálogos complejos'
   });
 });
 
@@ -427,12 +476,12 @@ app.use((error, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 PDF Microservice OPTIMIZED corriendo en puerto ${PORT}`);
-  console.log(`📋 Optimizaciones aplicadas:`);
-  console.log(`   • GPT-4o-mini (más rápido y barato)`);
-  console.log(`   • Chunking para documentos grandes`);
-  console.log(`   • Normalización de precios argentinos`);
-  console.log(`   • Deduplicación automática`);
-  console.log(`   • Logs con requestId`);
+  console.log(`🚀 PDF Microservice GPT-4 OPTIMIZED corriendo en puerto ${PORT}`);
+  console.log(`📋 Configuración para tablas complejas:`);
+  console.log(`   • GPT-4 turbo (máxima capacidad)`);
+  console.log(`   • Chunks de 15000 caracteres`);
+  console.log(`   • Prompts especializados`);
+  console.log(`   • Logs detallados de productos`);
+  console.log(`   • Manejo de múltiples columnas`);
   console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? 'Configurada' : 'NO CONFIGURADA'}`);
 });
