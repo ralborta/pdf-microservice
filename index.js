@@ -1,6 +1,4 @@
-// index.js - MICROSERVICIO CORREGIDO
-// Usando GPT-4 con texto extraído en lugar de GPT-4V con imágenes
-
+// index.js - MICROSERVICIO OPTIMIZADO CON MEJORAS DEL ESPECIALISTA
 const express = require('express');
 const OpenAI = require('openai');
 const cors = require('cors');
@@ -18,7 +16,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// Schema estructurado corregido
+// Schema estructurado optimizado
 const SCHEMA_PRODUCTOS = {
   type: "json_schema",
   json_schema: {
@@ -64,25 +62,69 @@ const SCHEMA_PRODUCTOS = {
 };
 
 // ============================================
-// EXTRACTOR DE TEXTO DE PDF
+// FUNCIONES HELPER OPTIMIZADAS
+// ============================================
+
+function chunkText(txt, max = 12000) {
+  const out = [];
+  for (let i = 0; i < txt.length; i += max) {
+    out.push(txt.slice(i, i + max));
+  }
+  return out;
+}
+
+function normalizeProducto(p) {
+  const u = (p.unidad || "").toUpperCase().trim();
+  const codigo = (p.codigo || "").toUpperCase().replace(/\s+/g, '');
+  
+  // Normalizar precios es-AR y quitar símbolos
+  let precio = p.precio;
+  if (typeof precio === "string") {
+    precio = precio
+      .replace(/[^\d.,-]/g, '') // Quitar símbolos monetarios
+      .replace(/\.(?=\d{3}(?:[^\d]|$))/g, '') // Quitar puntos de miles
+      .replace(',', '.'); // Cambiar coma decimal por punto
+    precio = parseFloat(precio);
+  }
+  
+  const stock = Number.isFinite(p.stock) 
+    ? Math.floor(p.stock) 
+    : parseInt(String(p.stock || '0').replace(/\D/g, ''), 10);
+  
+  return {
+    ...p,
+    codigo,
+    unidad: u,
+    precio: Number.isFinite(precio) ? precio : undefined,
+    stock: Number.isFinite(stock) ? stock : undefined
+  };
+}
+
+// ============================================
+// EXTRACTOR DE TEXTO ROBUSTO
 // ============================================
 
 async function extraerTextoDePDF(pdfBase64) {
   console.log('Extrayendo texto del PDF...');
   
   try {
-    // Usar pdf-parse para extraer texto
     const pdfParse = require('pdf-parse');
-    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+    
+    // Permitir data URL o base64 plano
+    const base64Clean = pdfBase64.includes('base64,')
+      ? pdfBase64.split('base64,').pop()
+      : pdfBase64;
+    
+    const pdfBuffer = Buffer.from(base64Clean, 'base64');
     
     const data = await pdfParse(pdfBuffer, {
       normalizeWhitespace: true,
       disableCombineTextItems: false,
-      max: 10 // Máximo 10 páginas
+      max: 10
     });
     
     if (!data.text || data.text.length < 50) {
-      throw new Error('PDF sin texto extraíble o muy poco contenido');
+      throw new Error('PDF sin texto extraíble o contenido insuficiente. Puede ser un PDF escaneado.');
     }
     
     console.log(`Texto extraído: ${data.text.length} caracteres, ${data.numpages} páginas`);
@@ -94,12 +136,16 @@ async function extraerTextoDePDF(pdfBase64) {
   }
 }
 
-// Ruta principal - Extraer productos de PDF
+// ============================================
+// RUTA PRINCIPAL OPTIMIZADA
+// ============================================
+
 app.post('/extract-pdf', async (req, res) => {
   const startTime = Date.now();
+  const requestId = Math.random().toString(36).substring(7);
   
   try {
-    console.log('📄 Nueva solicitud de extracción PDF');
+    console.log(`[${requestId}] Nueva solicitud de extracción PDF`);
     
     const { pdfBase64, filename } = req.body;
     
@@ -117,78 +163,97 @@ app.post('/extract-pdf', async (req, res) => {
       });
     }
     
-    console.log(`📋 Procesando: ${filename || 'documento.pdf'}`);
-    console.log(`📏 Tamaño base64: ${pdfBase64.length} caracteres`);
+    console.log(`[${requestId}] Procesando: ${filename || 'documento.pdf'}`);
+    console.log(`[${requestId}] Tamaño base64: ${pdfBase64.length} caracteres`);
     
     // PASO 1: Extraer texto del PDF
     const textoExtraido = await extraerTextoDePDF(pdfBase64);
     
-    // PASO 2: Procesar con GPT-4 usando texto (no imagen)
-    console.log('🤖 Enviando texto a GPT-4...');
+    // PASO 2: Procesar con GPT usando chunking
+    console.log(`[${requestId}] Enviando texto a LLM (chunking)...`);
+    const chunks = chunkText(textoExtraido, 12000);
+    const productosAgg = [];
+    let calidadAgg = "baja";
     
-    const response = await openai.chat.completions.create({
-      model: "gpt-4-turbo-preview", // Cambio: usar GPT-4 turbo en lugar de vision
-      messages: [
-        {
-          role: "system",
-          content: `Eres un extractor experto de datos de productos de documentos.
+    for (let idx = 0; idx < chunks.length; idx++) {
+      console.log(`[${requestId}] Procesando chunk ${idx + 1}/${chunks.length}`);
+      
+      const promptUsuario = `Archivo: ${filename || 'documento.pdf'}\n\n` +
+        `TEXTO (fragmento ${idx + 1}/${chunks.length}):\n` +
+        chunks[idx] + `\n\n` +
+        `Instrucciones: extrae SOLO productos completos según el schema.`;
 
-INSTRUCCIONES ESTRICTAS:
-- Analiza el texto proporcionado extraído de un PDF
-- Extrae ÚNICAMENTE productos con datos completos
-- Respeta el schema JSON estricto
-- Si no hay productos claros, devuelve array vacío
-- Evalúa honestamente la calidad de extracción
+      const resp = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { 
+            role: "system", 
+            content: "Eres un extractor que responde exclusivamente en JSON válido, siguiendo estrictamente el schema."
+          },
+          { 
+            role: "user", 
+            content: promptUsuario 
+          }
+        ],
+        response_format: SCHEMA_PRODUCTOS,
+        max_tokens: 4000,
+        temperature: 0.0
+      });
 
-FORMATO DE PRODUCTOS:
-- Código: alfanumérico, mayúsculas (ej: ABC123)
-- Descripción: texto descriptivo del producto
-- Precio: número sin símbolos monetarios
-- Stock: número entero
-- Unidad: UN, KG, LT, MT, PZ, etc.
-- Categoría: si está disponible en el texto`
-        },
-        {
-          role: "user",
-          content: `Archivo: ${filename || 'documento.pdf'}
+      const jsonChunk = JSON.parse(resp.choices[0].message.content || "{}");
+      const prods = Array.isArray(jsonChunk.productos) ? jsonChunk.productos : [];
+      const calidad = jsonChunk?.metadatos?.calidadExtraccion || "baja";
+      
+      if (calidad === "alta" || (calidad === "media" && calidadAgg !== "alta")) {
+        calidadAgg = calidad;
+      }
 
-Texto extraído del PDF:
-${textoExtraido.substring(0, 15000)} // Limitar para no exceder tokens
-
-Analiza este texto y extrae todos los productos siguiendo el schema estricto.
-
-IMPORTANTE:
-- Solo productos con código, descripción, precio, stock y unidad completos
-- Precios como números puros (sin $, €, etc.)
-- Stock como números enteros
-- Códigos en mayúsculas y sin espacios
-- Evalúa la calidad de extracción honestamente`
-        }
-      ],
-      response_format: SCHEMA_PRODUCTOS,
-      max_tokens: 4000,
-      temperature: 0.1
-    });
-    
-    const contenido = response.choices[0].message.content;
-    
-    if (!contenido) {
-      throw new Error('No se recibió respuesta de OpenAI');
+      for (const p of prods) {
+        productosAgg.push(normalizeProducto(p));
+      }
+      
+      console.log(`[${requestId}] Chunk ${idx + 1}: ${prods.length} productos encontrados`);
     }
+
+    // Dedupe por codigo + descripcion
+    const dedup = new Map();
+    for (const p of productosAgg) {
+      if (!p.codigo || !p.descripcion || !Number.isFinite(p.precio) || !Number.isFinite(p.stock) || !p.unidad) {
+        continue;
+      }
+      const key = `${p.codigo}::${p.descripcion.trim().toLowerCase()}`;
+      if (!dedup.has(key)) {
+        dedup.set(key, p);
+      }
+    }
+    const productos = [...dedup.values()];
+
+    const resultado = {
+      productos,
+      metadatos: {
+        totalProductos: productos.length,
+        calidadExtraccion: productos.length ? calidadAgg : "baja",
+        metodoProcesamiento: "LLM structured output (chunked)"
+      }
+    };
     
-    const resultado = JSON.parse(contenido);
     const processingTime = Date.now() - startTime;
     
-    console.log(`✅ Extracción completada en ${processingTime}ms`);
-    console.log(`📊 Productos extraídos: ${resultado.productos.length}`);
-    console.log(`🎯 Calidad: ${resultado.metadatos.calidadExtraccion}`);
+    console.log(`[${requestId}] Extracción completada en ${processingTime}ms`);
+    console.log(`[${requestId}] Productos finales: ${productos.length}`);
+    console.log(`[${requestId}] Calidad: ${resultado.metadatos.calidadExtraccion}`);
     
     // Log de primeros productos para debug
-    if (resultado.productos.length > 0) {
-      console.log('🔍 Primeros productos extraídos:');
-      resultado.productos.slice(0, 3).forEach((p, i) => {
+    if (productos.length > 0) {
+      console.log(`[${requestId}] Primeros productos extraídos:`);
+      productos.slice(0, 3).forEach((p, i) => {
         console.log(`  ${i+1}: ${p.codigo} - ${p.descripcion?.substring(0, 30)} - $${p.precio}`);
       });
+    }
+    
+    // Validación antes de responder
+    if (!Array.isArray(resultado.productos)) {
+      throw new Error("El modelo no devolvió 'productos' como array");
     }
     
     res.json({
@@ -198,15 +263,17 @@ IMPORTANTE:
         timeMs: processingTime,
         filename: filename || 'documento.pdf',
         timestamp: new Date().toISOString(),
-        metodo: 'GPT-4 con texto extraído'
+        metodo: 'GPT-4o-mini + chunking',
+        requestId: requestId,
+        chunks: chunks.length
       }
     });
     
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('❌ Error en extracción:', error);
+    console.error(`[${requestId}] Error en extracción:`, error);
     
-    // Respuesta de error con estructura válida
+    // Respuesta de error estructurada
     res.status(500).json({
       success: false,
       error: error.message,
@@ -221,50 +288,64 @@ IMPORTANTE:
       processing: {
         timeMs: processingTime,
         timestamp: new Date().toISOString(),
-        metodo: 'Error en procesamiento'
+        metodo: 'Error en procesamiento',
+        requestId: requestId
       }
     });
   }
 });
 
-// Ruta de prueba con texto de ejemplo
+// ============================================
+// ENDPOINT DE PRUEBA OPTIMIZADO
+// ============================================
+
 app.post('/test-extract', async (req, res) => {
   const textoEjemplo = `
-LISTA DE PRODUCTOS
+LISTA DE PRODUCTOS - FERRETERÍA
 
 CÓDIGO    DESCRIPCIÓN                     PRECIO    STOCK   UNIDAD
-ABC001    Producto de ejemplo uno         15.50     25      UN
-ABC002    Producto de ejemplo dos         23.75     10      KG
-ABC003    Producto de ejemplo tres        8.90      100     LT
+ABC001    Martillo carpintero 500g        $1.250,50    25      UN
+ABC002    Tornillos autorroscantes 3x20   $850,75     100     CAJA
+ABC003    Pintura látex blanca 4 litros   $2.890,00    15     LT
+DEF004    Taladro eléctrico 650W          $15.450,25    8     UN
+DEF005    Cable eléctrico 2.5mm x metro   $125,80     500     MT
   `;
   
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4-turbo-preview",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: "Extrae productos del texto siguiendo el schema estricto."
+          content: "Eres un extractor que responde exclusivamente en JSON válido, siguiendo estrictamente el schema."
         },
         {
           role: "user", 
-          content: `Texto: ${textoEjemplo}`
+          content: `Extrae productos del siguiente texto:\n\n${textoEjemplo}`
         }
       ],
       response_format: SCHEMA_PRODUCTOS,
       max_tokens: 2000,
-      temperature: 0.1
+      temperature: 0.0
     });
     
     const resultado = JSON.parse(response.choices[0].message.content);
     
+    // Normalizar productos de prueba
+    const productosNormalizados = resultado.productos.map(normalizeProducto);
+    
     res.json({
       success: true,
-      data: resultado,
-      test: true
+      data: {
+        ...resultado,
+        productos: productosNormalizados
+      },
+      test: true,
+      modelo: "gpt-4o-mini"
     });
     
   } catch (error) {
+    console.error('Error en test:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -273,51 +354,69 @@ ABC003    Producto de ejemplo tres        8.90      100     LT
   }
 });
 
-// Ruta de salud
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    service: 'PDF Microservice Fixed',
-    version: '1.1.0',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    openai: process.env.OPENAI_API_KEY ? 'Configurado' : 'No configurado'
-  });
+// ============================================
+// RUTAS DE ESTADO
+// ============================================
+
+app.get('/health', async (req, res) => {
+  try {
+    // Verificar conexión a OpenAI
+    const testResponse = await openai.models.list();
+    
+    res.json({
+      status: 'OK',
+      service: 'PDF Microservice Optimized',
+      version: '1.2.0',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      openai: {
+        configured: !!process.env.OPENAI_API_KEY,
+        connected: !!testResponse,
+        model: 'gpt-4o-mini'
+      }
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: 'ERROR',
+      service: 'PDF Microservice Optimized',
+      error: error.message,
+      openai: {
+        configured: !!process.env.OPENAI_API_KEY,
+        connected: false
+      }
+    });
+  }
 });
 
-// Ruta de información
 app.get('/', (req, res) => {
   res.json({
-    service: 'PDF to Excel Microservice - Fixed',
-    version: '1.1.0',
-    description: 'Microservicio corregido para extraer productos de PDFs usando GPT-4 con texto',
+    service: 'PDF to Excel Microservice - Optimized',
+    version: '1.2.0',
+    description: 'Microservicio optimizado con mejoras del especialista',
     endpoints: {
       'POST /extract-pdf': 'Extraer productos de PDF (producción)',
       'POST /test-extract': 'Probar extracción con texto de ejemplo',
-      'GET /health': 'Estado del servicio',
+      'GET /health': 'Estado del servicio con verificación OpenAI',
       'GET /': 'Información del servicio'
     },
-    cambios: [
-      'Cambio de GPT-4V a GPT-4 turbo',
-      'Extracción de texto con pdf-parse',
-      'Procesamiento de texto en lugar de imagen',
-      'Mejor manejo de errores',
-      'Endpoint de prueba agregado'
+    optimizaciones: [
+      'GPT-4o-mini (más rápido y económico)',
+      'Chunking de texto para documentos grandes',
+      'Normalización de precios argentinos',
+      'Deduplicación de productos',
+      'Validación robusta de entrada',
+      'Logs con requestId para trazabilidad',
+      'Manejo mejorado de errores'
     ],
-    uso: {
-      method: 'POST',
-      endpoint: '/extract-pdf',
-      body: {
-        pdfBase64: 'string (required)',
-        filename: 'string (optional)'
-      }
-    }
+    modelo: 'gpt-4o-mini',
+    chunking: true,
+    normalizacion: 'Precios argentinos soportados'
   });
 });
 
 // Manejo de errores globales
 app.use((error, req, res, next) => {
-  console.error('❌ Error no manejado:', error);
+  console.error('Error no manejado:', error);
   res.status(500).json({
     success: false,
     error: 'Error interno del servidor',
@@ -325,27 +424,15 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Manejo de rutas no encontradas
-app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Ruta no encontrada',
-    availableEndpoints: [
-      'POST /extract-pdf',
-      'POST /test-extract',
-      'GET /health',
-      'GET /'
-    ]
-  });
-});
-
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 PDF Microservice FIXED corriendo en puerto ${PORT}`);
-  console.log(`📋 Cambios principales:`);
-  console.log(`   • GPT-4 turbo en lugar de GPT-4V`);
-  console.log(`   • Extracción de texto con pdf-parse`);
-  console.log(`   • Procesamiento más confiable`);
+  console.log(`🚀 PDF Microservice OPTIMIZED corriendo en puerto ${PORT}`);
+  console.log(`📋 Optimizaciones aplicadas:`);
+  console.log(`   • GPT-4o-mini (más rápido y barato)`);
+  console.log(`   • Chunking para documentos grandes`);
+  console.log(`   • Normalización de precios argentinos`);
+  console.log(`   • Deduplicación automática`);
+  console.log(`   • Logs con requestId`);
   console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? 'Configurada' : 'NO CONFIGURADA'}`);
 });

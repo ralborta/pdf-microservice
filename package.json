@@ -1,7 +1,7 @@
 {
   "name": "pdf-microservice",
-  "version": "1.1.0",
-  "description": "Microservicio corregido para procesar PDFs con OpenAI",
+  "version": "1.2.0",
+  "description": "Microservicio optimizado con mejoras del especialista",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
