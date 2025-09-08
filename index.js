@@ -1000,7 +1000,7 @@ app.get('/', (req, res) => {
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`\n🚀 PDF Microservice v1.6.0 iniciado`);
+  console.log(`\n🚀 PDF Microservice v1.6.0 iniciado - DEPLOY FORZADO`);
   console.log(`📍 Puerto: ${PORT}`);
   console.log(`🤖 Modelo: GPT-4 turbo`);
   console.log(`✅ OpenAI configurado: ${!!process.env.OPENAI_API_KEY}`);
