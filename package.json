@@ -1,7 +1,7 @@
 {
   "name": "pdf-microservice",
-  "version": "1.3.0",
-  "description": "Microservicio con GPT-4 para tablas complejas de productos",
+  "version": "1.4.0",
+  "description": "Microservicio con GPT-4 para extracción inteligente de productos",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
