@@ -1,7 +1,7 @@
 {
   "name": "pdf-microservice",
-  "version": "1.4.0",
-  "description": "Microservicio con GPT-4 para extracción inteligente de productos",
+  "version": "1.5.0",
+  "description": "Microservicio con preprocesador multipath y GPT-4",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

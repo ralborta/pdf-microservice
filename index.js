@@ -115,12 +115,219 @@ function deduplicateProducts(products) {
   return Array.from(seen.values());
 }
 
+// ========== PREPROCESADOR MULTIPATH ==========
+
+// Detectar el perfil/tipo de documento
+function detectProfile(text, filename = '') {
+  const t = text.toLowerCase();
+  const fname = filename.toLowerCase();
+  
+  // Sermat baterías - detecta por patrones únicos
+  if (fname.includes('sermat') || 
+      (t.includes('c.c.a') && t.includes('c20') && t.includes('rc')) ||
+      (t.includes('bater') && /\d+\s*\$/.test(text))) {
+    return 'sermat_baterias';
+  }
+  
+  // Aditivos Liqui Moly
+  if ((fname.includes('aditivo') || fname.includes('liqui')) ||
+      (t.includes('aditivos') && t.includes('cont. caja'))) {
+    return 'aditivos_liqui';
+  }
+  
+  return 'generico';
+}
+
+// Limpiar precios argentinos
+function cleanMoneyAR(s) {
+  if (!s) return undefined;
+  if (typeof s === 'number') return s;
+  
+  const v = String(s)
+    .replace(/\$/g, '')           // quitar $
+    .replace(/\s/g, '')           // quitar espacios
+    .replace(/\.(?=\d{3}(?:\D|$))/g, '') // quitar puntos de miles (66.791 -> 66791)
+    .replace(',', '.');           // coma decimal a punto
+    
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+// PREPROCESADOR ESPECÍFICO PARA SERMAT
+function preprocessSermat(text) {
+  console.log('[PREPROCESS] Aplicando perfil SERMAT');
+  
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const productos = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // Buscar líneas que empiezan con código (12-45, NS40, VOLTA 50, etc.)
+    const codeMatch = line.match(/^([A-Z0-9][A-Z0-9\-\s]{2,}?)\s+/i);
+    if (!codeMatch) continue;
+    
+    const codigo = codeMatch[1].trim().replace(/\s+/g, '');
+    
+    // Buscar precio en la misma línea o siguientes
+    let precio = null;
+    let descripcion = line.replace(codeMatch[0], '');
+    let hasStock = true;
+    
+    // Buscar precio con $ (puede estar al final)
+    const priceMatch = line.match(/\$\s*([\d.,]+)/);
+    if (priceMatch) {
+      precio = cleanMoneyAR(priceMatch[1]);
+    } else {
+      // Buscar en las siguientes 2 líneas
+      for (let j = 1; j <= 2 && i + j < lines.length; j++) {
+        const nextLine = lines[i + j];
+        const nextPriceMatch = nextLine.match(/\$\s*([\d.,]+)/);
+        if (nextPriceMatch) {
+          precio = cleanMoneyAR(nextPriceMatch[1]);
+          descripcion += ' ' + nextLine;
+          break;
+        }
+      }
+    }
+    
+    // Detectar SIN STOCK
+    if (/sin\s*stock/i.test(descripcion)) {
+      hasStock = false;
+      descripcion = descripcion.replace(/sin\s*stock/i, '').trim();
+    }
+    
+    // Si encontramos precio o es SIN STOCK, agregar producto
+    if (precio || !hasStock) {
+      // Limpiar descripción de caracteres extra
+      descripcion = descripcion
+        .replace(/\$\s*[\d.,]+/, '') // quitar precio de la descripción
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      productos.push({
+        codigo: codigo.toUpperCase(),
+        descripcion: descripcion || codigo,
+        precio: precio || 0,
+        stock: hasStock ? 100 : 0,
+        unidad: 'UN',
+        categoria: 'Baterías'
+      });
+    }
+  }
+  
+  console.log(`[PREPROCESS] Sermat: ${productos.length} productos extraídos`);
+  return productos;
+}
+
+// PREPROCESADOR PARA ADITIVOS
+function preprocessAditivos(text) {
+  console.log('[PREPROCESS] Aplicando perfil ADITIVOS');
+  
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const productos = [];
+  
+  for (const line of lines) {
+    // Buscar código de 3-4 dígitos al inicio
+    const codeMatch = line.match(/^(\d{3,4})\s+/);
+    if (!codeMatch) continue;
+    
+    const codigo = codeMatch[1];
+    let descripcion = line.replace(codeMatch[0], '');
+    
+    // Buscar presentación (300 ml, 1 litro, etc.)
+    const presentMatch = descripcion.match(/(\d+\s*(?:ml|g|litro|litros|kg))/i);
+    const presentacion = presentMatch ? presentMatch[1] : '';
+    
+    // Buscar precios (pueden ser varios, tomar el último que suele ser con IVA)
+    const precios = [...line.matchAll(/([\d.,]+)/g)]
+      .map(m => cleanMoneyAR(m[1]))
+      .filter(n => n && n > 100); // filtrar valores muy pequeños
+    
+    const precio = precios[precios.length - 1] || precios[0];
+    
+    if (precio) {
+      // Limpiar descripción
+      descripcion = descripcion
+        .replace(/[\d.,]+/g, '') // quitar números
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      productos.push({
+        codigo,
+        descripcion: descripcion + (presentacion ? ` - ${presentacion}` : ''),
+        precio,
+        stock: 100,
+        unidad: 'UN',
+        categoria: 'Aditivos',
+        contenido: presentacion
+      });
+    }
+  }
+  
+  console.log(`[PREPROCESS] Aditivos: ${productos.length} productos extraídos`);
+  return productos;
+}
+
+// PREPROCESADOR GENÉRICO (fallback)
+function preprocessGeneric(text) {
+  console.log('[PREPROCESS] Aplicando perfil GENÉRICO');
+  
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  const productos = [];
+  
+  for (const line of lines) {
+    // Patrón: código + descripción + precio
+    const match = line.match(/^([A-Z0-9][A-Z0-9\-]{2,})\s+(.+?)\s+\$?\s*([\d.,]+)$/i);
+    if (!match) continue;
+    
+    const precio = cleanMoneyAR(match[3]);
+    if (precio && precio > 10) { // filtrar valores muy bajos
+      productos.push({
+        codigo: match[1].toUpperCase(),
+        descripcion: match[2].trim(),
+        precio,
+        stock: 100,
+        unidad: 'UN'
+      });
+    }
+  }
+  
+  console.log(`[PREPROCESS] Genérico: ${productos.length} productos extraídos`);
+  return productos;
+}
+
+// ========== FUNCIÓN PRINCIPAL DE PREPROCESAMIENTO ==========
+function preprocessText(text, filename = '') {
+  const profile = detectProfile(text, filename);
+  console.log(`[PREPROCESS] Perfil detectado: ${profile}`);
+  
+  let productos = [];
+  
+  switch (profile) {
+    case 'sermat_baterias':
+      productos = preprocessSermat(text);
+      break;
+    case 'aditivos_liqui':
+      productos = preprocessAditivos(text);
+      break;
+    default:
+      productos = preprocessGeneric(text);
+  }
+  
+  return {
+    profile,
+    productos,
+    requiresGPT: productos.length === 0 // solo usar GPT si no encontramos nada
+  };
+}
+
 // Función principal de extracción con GPT-4
 async function extractWithGPT4(pdfText, filename = 'documento.pdf') {
   const requestId = Math.random().toString(36).substring(7);
   const startTime = Date.now();
   
-  console.log(`[${requestId}] Iniciando extracción GPT-4 para ${filename}`);
+  console.log(`[${requestId}] Iniciando extracción para ${filename}`);
   console.log(`[${requestId}] Longitud del texto: ${pdfText.length} caracteres`);
   
   // Verificar si hay texto para procesar
@@ -141,6 +348,39 @@ async function extractWithGPT4(pdfText, filename = 'documento.pdf') {
   // Log de los primeros caracteres para debug
   console.log(`[${requestId}] Primeros 500 caracteres del PDF:`);
   console.log(pdfText.substring(0, 500));
+  
+  // NUEVO: Intentar preprocesamiento primero
+  const { profile, productos, requiresGPT } = preprocessText(pdfText, filename);
+  
+  // Si el preprocesador encontró productos, devolverlos directamente
+  if (productos.length > 0) {
+    console.log(`[${requestId}] Preprocesador exitoso: ${productos.length} productos`);
+    
+    return {
+      success: true,
+      data: {
+        productos: productos,
+        metadatos: {
+          totalProductos: productos.length,
+          calidadExtraccion: 'alta',
+          metodoProcesamiento: `Preprocesador ${profile}`,
+          tipoTabla: profile
+        }
+      },
+      processing: {
+        timeMs: Date.now() - startTime,
+        filename,
+        timestamp: new Date().toISOString(),
+        metodo: `Preprocesador ${profile}`,
+        requestId,
+        profile,
+        textLength: pdfText.length
+      }
+    };
+  }
+  
+  // Si no encontró nada, continuar con GPT-4
+  console.log(`[${requestId}] Preprocesador no encontró productos, usando GPT-4`);
   
   try {
     // Dividir en chunks
@@ -338,17 +578,18 @@ app.post('/extract-pdf', async (req, res) => {
 // 2. Endpoint de prueba con datos de ejemplo
 app.post('/test-extract', async (req, res) => {
   try {
-    // Simular texto de un PDF de ejemplo
+    // Simular texto de un PDF de ejemplo con datos de Sermat
     const testText = `
-Lista de precios Nº37 1/8/2025
+Lista de precios Nº37 1/8/2025 - SERMAT BATERÍAS
 CODIGO  TIPO     Borne  C20   RC    C.C.A.  Aplicaciones                           Precio
 12-45   12x45    D      38    56    350     Clio mio-palio 8v-Ford ka             $ 66.791
 12-55   12x55    D      51    90    430     P 208/308/207/307 - Fiat Argo         $ 77.873
 12-65   12X65    D/I    45    70    430     Focus, Gol trend, Voyager              $ 75.008
 12-70   12X70    STD    54    83    450     Peugeot-Citroën-Partner-Berlingo      $ 83.631
 NS40    H Fit    D      30    41    260     Honda Fit/ City - Hyundai I10         SIN STOCK
+VOLTA 50 VOLTA 50 D      45    70    400     Universal - múltiples aplicaciones    $ 89.500
 
-ADITIVOS
+ADITIVOS LIQUI MOLY
 2124    Injection Reiniger      300ml    Universal    $ 14.189
 1870    Pro-Line Fuel Cleaner   300ml    Intensivo    $ 22.320
 2603    Ventil Sauber          150ml    Universal    $ 18.069
@@ -388,7 +629,7 @@ app.get('/health', async (req, res) => {
     res.json({
       status: 'OK',
       service: 'PDF Microservice GPT-4 Optimized',
-      version: '1.4.0',
+      version: '1.5.0',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       openai: {
@@ -409,7 +650,7 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'PDF to Excel Microservice - GPT-4 Optimized',
-    version: '1.4.0',
+    version: '1.5.0',
     description: 'Microservicio con GPT-4 para extracción inteligente de productos',
     endpoints: {
       'POST /extract-pdf': 'Extraer productos de PDF con GPT-4',
@@ -418,15 +659,15 @@ app.get('/', (req, res) => {
       'GET /': 'Información del servicio'
     },
     optimizaciones: [
-      'GPT-4 turbo para tablas complejas',
-      'Chunks de 15000 caracteres',
-      'Prompts adaptativos para cualquier tipo de producto',
-      'Detección automática de estructura de tabla',
-      'Extracción completa sin pérdida de información',
-      'Normalización de precios argentinos',
-      'Deduplicación inteligente',
-      'Logs detallados con requestId',
-      'Manejo robusto de múltiples formatos'
+      'Preprocesador multipath (Sermat, Aditivos, Genérico)',
+      'GPT-4 turbo como fallback para casos complejos',
+      'Detección automática de perfil de documento',
+      'Extracción rápida sin costo de API para casos conocidos',
+      'Manejo específico de baterías Sermat',
+      'Normalización perfecta de precios argentinos',
+      'Detección de SIN STOCK automática',
+      'Logs detallados con requestId y perfil',
+      'Chunks de 15000 caracteres para GPT-4'
     ],
     modelo: 'gpt-4-turbo-preview',
     especializado: 'Listas de precios, catálogos y tablas de productos'
@@ -435,7 +676,7 @@ app.get('/', (req, res) => {
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`\n🚀 PDF Microservice v1.4.0 iniciado`);
+  console.log(`\n🚀 PDF Microservice v1.5.0 iniciado`);
   console.log(`📍 Puerto: ${PORT}`);
   console.log(`🤖 Modelo: GPT-4 turbo`);
   console.log(`✅ OpenAI configurado: ${!!process.env.OPENAI_API_KEY}`);
