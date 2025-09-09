@@ -1,4 +1,4 @@
-// CloudConvert → PDF→XLSX microservicio ROBUSTO y PROFESIONAL
+// CloudConvert → PDF→XLSX microservicio HÍBRIDO (Elegante + Esencial)
 const express = require('express');
 const cors = require('cors');
 const CloudConvert = require('cloudconvert');
@@ -8,41 +8,32 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// ========== CONFIGURACIÓN ==========
+// ========== CONFIGURACIÓN ESENCIAL ==========
 const config = {
-  maxFileSize: process.env.MAX_FILE_SIZE || '10MB',
   jobTimeout: parseInt(process.env.JOB_TIMEOUT) || 120000,
   rateLimit: {
     window: parseInt(process.env.RATE_LIMIT_WINDOW) || 60000,
     max: parseInt(process.env.RATE_LIMIT_MAX) || 10
-  },
-  cloudconvert: {
-    engine: process.env.CLOUDCONVERT_ENGINE || 'advanced',
-    ocr: process.env.CLOUDCONVERT_OCR === 'true',
-    ocrLanguage: process.env.CLOUDCONVERT_OCR_LANG || 'es'
   }
 };
 
-// ========== MÉTRICAS Y MONITOREO ==========
+// ========== MÉTRICAS BÁSICAS ==========
 const metrics = {
   totalRequests: 0,
   successfulConversions: 0,
   failedConversions: 0,
-  averageProcessingTime: 0,
   startTime: Date.now()
 };
 
-// ========== RATE LIMITING ==========
+// ========== RATE LIMITING SIMPLE ==========
 const rateLimit = new Map();
-const RATE_LIMIT_WINDOW = config.rateLimit.window;
-const MAX_REQUESTS = config.rateLimit.max;
 
 function checkRateLimit(ip) {
   const now = Date.now();
   const userRequests = rateLimit.get(ip) || [];
-  const recentRequests = userRequests.filter(time => now - time < RATE_LIMIT_WINDOW);
+  const recentRequests = userRequests.filter(time => now - time < config.rateLimit.window);
   
-  if (recentRequests.length >= MAX_REQUESTS) {
+  if (recentRequests.length >= config.rateLimit.max) {
     throw new Error('Rate limit exceeded - demasiadas peticiones');
   }
   
@@ -50,75 +41,55 @@ function checkRateLimit(ip) {
   rateLimit.set(ip, recentRequests);
 }
 
-// ========== VALIDACIÓN DE PDF ==========
-function validatePdfBase64(base64) {
-  if (!base64 || base64.length < 100) {
-    throw new Error('Base64 muy corto o vacío');
-  }
-  
-  // Verificar que sea PDF válido
-  try {
-    const pdfHeader = Buffer.from(base64.substring(0, 4), 'base64').toString();
-    if (!pdfHeader.startsWith('%PDF')) {
-      throw new Error('No es un PDF válido - debe empezar con %PDF');
-    }
-  } catch (e) {
-    throw new Error('Base64 inválido');
-  }
-  
-  // Verificar tamaño (máximo 10MB)
-  const sizeInBytes = (base64.length * 3) / 4;
-  if (sizeInBytes > 10 * 1024 * 1024) {
-    throw new Error('PDF muy grande (máximo 10MB)');
-  }
-  
-  return sizeInBytes;
-}
-
-// ========== LOGGING MEJORADO ==========
-function logRequest(req, startTime, result, error = null) {
-  const duration = Date.now() - startTime;
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  const status = error ? 'ERROR' : 'SUCCESS';
-  const level = error ? '❌' : '✅';
-  
-  console.log(`${level} [${new Date().toISOString()}] ${req.method} ${req.path} - ${status} - ${duration}ms - IP: ${ip}`);
-  
-  if (error) {
-    console.error(`   Error: ${error.message}`);
-  }
-}
-
-// ========== MÉTRICAS ==========
-function updateMetrics(success, processingTime) {
-  metrics.totalRequests++;
-  if (success) {
-    metrics.successfulConversions++;
-  } else {
-    metrics.failedConversions++;
-  }
-  
-  metrics.averageProcessingTime = 
-    (metrics.averageProcessingTime + processingTime) / 2;
-}
-
 // ========== CLOUDCONVERT SETUP ==========
 if (!process.env.CLOUDCONVERT_API_KEY) {
-  console.warn('⚠️  Falta CLOUDCONVERT_API_KEY en .env');
+  console.warn('⚠️ Falta CLOUDCONVERT_API_KEY en .env');
 }
 const cloudConvert = new CloudConvert(process.env.CLOUDCONVERT_API_KEY);
 
-// ========== HELPER FUNCTIONS ==========
+/* ---------------- Helpers Elegantes ---------------- */
+
+// Acepta data URL o base64 plano; remueve espacios/line breaks
 function cleanBase64(input) {
   if (!input) return '';
-  return input.includes('base64,') ? input.split('base64,').pop() : input;
+  let s = input.includes('base64,') ? input.split('base64,').pop() : input;
+  s = s.replace(/\s+/g, '');
+  return s;
 }
 
+// Verifica alfabeto y padding de base64
+function isValidBase64(s) {
+  if (!/^[A-Za-z0-9+/=]+$/.test(s)) return false;
+  if (s.length % 4 !== 0) return false;
+  return true;
+}
+
+// Heurística: PDFs suelen empezar con %PDF, que en base64 es "JVBERi0"
+function looksLikePdf(base64) {
+  return base64.startsWith('JVBERi0');
+}
+
+// Lanza error claro si el base64 no es decodificable o no parece PDF
+function ensurePdfBase64OrThrow(b64) {
+  if (!b64 || b64.length < 64) throw new Error('Base64 demasiado corto');
+  if (!isValidBase64(b64)) throw new Error('Base64 contiene caracteres inválidos o padding incorrecto');
+  try {
+    const headAscii = Buffer.from(b64.slice(0, 64), 'base64').toString('ascii');
+    if (!headAscii.startsWith('%PDF') && !looksLikePdf(b64)) {
+      throw new Error('No parece un PDF (falta cabecera %PDF)');
+    }
+  } catch {
+    throw new Error('Base64 no decodifica correctamente');
+  }
+}
+
+// Asegura extensión .pdf para ayudar a CloudConvert
 function safePdfName(name = 'documento.pdf') {
   const n = (name || 'documento').trim();
   return n.toLowerCase().endsWith('.pdf') ? n : `${n}.pdf`;
 }
 
+// Revisa tasks del job y arroja detalle si alguna falló
 function assertJobOk(job) {
   const failed = (job.tasks || []).filter(t => t.status === 'error');
   if (failed.length) {
@@ -131,6 +102,7 @@ function assertJobOk(job) {
   }
 }
 
+// Timeout personalizable para jobs
 async function waitJobWithTimeout(jobId, timeout = config.jobTimeout) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
@@ -142,25 +114,36 @@ async function waitJobWithTimeout(jobId, timeout = config.jobTimeout) {
   throw new Error(`Job timeout después de ${timeout}ms`);
 }
 
+// Descarga a buffer y devuelve base64 + tamaño
 async function downloadToBase64(url) {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Descarga falló (${resp.status})`);
   const buf = Buffer.from(await resp.arrayBuffer());
-  return { base64: buf.toString('base64'), bytes: buf.length };
+  return { base64: buf.toString('base64'), bytes: buf.length, buf };
 }
 
-// ========== MIDDLEWARE DE SEGURIDAD ==========
-app.use('/extract-pdf', (req, res, next) => {
-  if (req.method === 'POST' && !req.is('application/json')) {
-    return res.status(400).json({ 
-      success: false,
-      error: 'Content-Type debe ser application/json' 
-    });
-  }
-  next();
-});
+// Logging simple pero efectivo
+function logRequest(req, startTime, success, error = null) {
+  const duration = Date.now() - startTime;
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const status = success ? '✅' : '❌';
+  console.log(`${status} [${new Date().toISOString()}] ${req.method} ${req.path} - ${duration}ms - IP: ${ip}`);
+  if (error) console.error(`   Error: ${error.message}`);
+}
 
-// ========== ENDPOINT PRINCIPAL: devuelve XLSX en base64 ==========
+// Actualizar métricas
+function updateMetrics(success) {
+  metrics.totalRequests++;
+  if (success) {
+    metrics.successfulConversions++;
+  } else {
+    metrics.failedConversions++;
+  }
+}
+
+/* ---------------- Endpoints ---------------- */
+
+// 1) Devuelve XLSX en base64 + downloadUrl
 app.post('/extract-pdf', async (req, res) => {
   const startTime = Date.now();
   let success = false;
@@ -172,20 +155,16 @@ app.post('/extract-pdf', async (req, res) => {
     
     const { pdfBase64, filename } = req.body || {};
     if (!pdfBase64) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'pdfBase64 requerido' 
-      });
+      return res.status(400).json({ success: false, error: 'pdfBase64 requerido' });
     }
 
-    // Validar PDF
-    const fileSize = validatePdfBase64(pdfBase64);
     const base64Clean = cleanBase64(pdfBase64);
+    ensurePdfBase64OrThrow(base64Clean);
     const safeName = safePdfName(filename);
 
-    console.log(`[CloudConvert] Procesando ${safeName} (${(fileSize/1024).toFixed(2)} KB)...`);
+    console.log(`[CloudConvert] Procesando ${safeName}...`);
 
-    // 1) Crear Job: import(base64) -> convert(pdf→xlsx) -> export(url)
+    // Job: import(base64) -> convert(pdf→xlsx) -> export(url)
     let job = await cloudConvert.jobs.create({
       tasks: {
         'import-file': {
@@ -197,126 +176,14 @@ app.post('/extract-pdf', async (req, res) => {
           operation: 'convert',
           input: 'import-file',
           input_format: 'pdf',
-          output_format: 'xlsx',
-          engine: config.cloudconvert.engine,
-          ...(config.cloudconvert.ocr && {
-            ocr: true,
-            ocr_language: config.cloudconvert.ocrLanguage
-          })
+          output_format: 'xlsx'
+          // Si tu plan soporta OCR y el PDF es escaneado:
+          // ocr: true,
+          // ocr_language: 'es'
         },
         'export-file': {
           operation: 'export/url',
           input: 'convert-to-xlsx'
-        }
-      }
-    });
-
-    console.log(`[CloudConvert] Job creado: ${job.id}`);
-
-    // 2) Esperar job con timeout + validar tareas
-    job = await waitJobWithTimeout(job.id);
-    assertJobOk(job);
-    console.log(`[CloudConvert] Job completado en ${(Date.now() - startTime)/1000}s`);
-
-    // 3) Tomar export/url
-    const exportTask = (job.tasks || []).find(
-      t => t.operation === 'export/url' && t.status === 'finished'
-    );
-    if (!exportTask?.result?.files?.length) {
-      throw new Error('export/url sin archivos');
-    }
-
-    const file = exportTask.result.files[0]; // { url, filename, size }
-    
-    // 4) Descargar XLSX y convertir a base64
-    const { base64, bytes } = await downloadToBase64(file.url);
-
-    success = true;
-    updateMetrics(true, Date.now() - startTime);
-    logRequest(req, startTime, { status: 'SUCCESS' });
-
-    return res.json({
-      success: true,
-      excel: base64,
-      downloadUrl: file.url, // por si prefieres no base64 en front
-      filename: safeName.replace(/\.pdf$/i, '.xlsx'),
-      stats: { 
-        bytes, 
-        remoteName: file.filename,
-        processingTime: `${((Date.now() - startTime)/1000).toFixed(2)}s`,
-        fileSize: `${(fileSize/1024).toFixed(2)} KB`
-      },
-      jobId: job.id,
-      credits: job.credits || 0
-    });
-    
-  } catch (err) {
-    success = false;
-    updateMetrics(false, Date.now() - startTime);
-    logRequest(req, startTime, { status: 'ERROR' }, err);
-    
-    const status = err?.status || err?.statusCode || 500;
-    const isRateLimit = err.message.includes('Rate limit');
-    const isValidation = err.message.includes('PDF') || err.message.includes('Base64');
-    
-    return res.status(isRateLimit ? 429 : isValidation ? 400 : status === 422 ? 422 : 500).json({
-      success: false,
-      error: isRateLimit ? 'Demasiadas peticiones - intenta más tarde' :
-             isValidation ? err.message :
-             status === 422 ? 'CloudConvert 422 - parámetros inválidos' : 
-             'Error procesando PDF',
-      details: err.message || err,
-      ...(err.cc_details && { cloudconvert_details: err.cc_details })
-    });
-  }
-});
-
-// ========== ALTERNATIVO: devuelve XLSX + JSON de TODAS las hojas ==========
-app.post('/extract-pdf-with-processing', async (req, res) => {
-  const startTime = Date.now();
-  let success = false;
-  
-  try {
-    // Rate limiting
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
-    checkRateLimit(ip);
-    
-    const { pdfBase64, filename } = req.body || {};
-    if (!pdfBase64) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'pdfBase64 requerido' 
-      });
-    }
-
-    // Validar PDF
-    const fileSize = validatePdfBase64(pdfBase64);
-    const base64Clean = cleanBase64(pdfBase64);
-    const safeName = safePdfName(filename);
-
-    console.log(`[CloudConvert] Procesando ${safeName} con parsing (${(fileSize/1024).toFixed(2)} KB)...`);
-
-    let job = await cloudConvert.jobs.create({
-      tasks: {
-        'import-file': { 
-          operation: 'import/base64', 
-          file: base64Clean, 
-          filename: safeName 
-        },
-        'convert-to-xlsx': {
-          operation: 'convert',
-          input: 'import-file',
-          input_format: 'pdf',
-          output_format: 'xlsx',
-          engine: config.cloudconvert.engine,
-          ...(config.cloudconvert.ocr && {
-            ocr: true,
-            ocr_language: config.cloudconvert.ocrLanguage
-          })
-        },
-        'export-file': { 
-          operation: 'export/url', 
-          input: 'convert-to-xlsx' 
         }
       }
     });
@@ -329,11 +196,82 @@ app.post('/extract-pdf-with-processing', async (req, res) => {
     );
     if (!exportTask?.result?.files?.length) throw new Error('export/url sin archivos');
 
+    const file = exportTask.result.files[0]; // { url, filename, size }
+    const { base64, bytes } = await downloadToBase64(file.url);
+
+    success = true;
+    updateMetrics(true);
+    logRequest(req, startTime, true);
+
+    return res.json({
+      success: true,
+      excel: base64,
+      downloadUrl: file.url, // útil si no querés base64 en el front
+      filename: safeName.replace(/\.pdf$/i, '.xlsx'),
+      stats: { 
+        bytes, 
+        remoteName: file.filename,
+        processingTime: `${((Date.now() - startTime)/1000).toFixed(2)}s`
+      },
+      jobId: job.id,
+      credits: job.credits || 0
+    });
+  } catch (err) {
+    success = false;
+    updateMetrics(false);
+    logRequest(req, startTime, false, err);
+    
+    const status = err?.status || err?.statusCode || 400;
+    const isRateLimit = err.message.includes('Rate limit');
+    
+    return res.status(isRateLimit ? 429 : status === 422 ? 422 : status).json({
+      success: false,
+      error: isRateLimit ? 'Demasiadas peticiones - intenta más tarde' : 
+             err.message || 'Error procesando PDF',
+      ...(err.cc_details && { cloudconvert_details: err.cc_details })
+    });
+  }
+});
+
+// 2) Devuelve XLSX + JSON de TODAS las hojas
+app.post('/extract-pdf-with-processing', async (req, res) => {
+  const startTime = Date.now();
+  let success = false;
+  
+  try {
+    // Rate limiting
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    checkRateLimit(ip);
+    
+    const { pdfBase64, filename } = req.body || {};
+    if (!pdfBase64) {
+      return res.status(400).json({ success: false, error: 'pdfBase64 requerido' });
+    }
+
+    const base64Clean = cleanBase64(pdfBase64);
+    ensurePdfBase64OrThrow(base64Clean);
+    const safeName = safePdfName(filename);
+
+    console.log(`[CloudConvert] Procesando ${safeName} con parsing...`);
+
+    let job = await cloudConvert.jobs.create({
+      tasks: {
+        'import-file': { operation: 'import/base64', file: base64Clean, filename: safeName },
+        'convert-to-xlsx': { operation: 'convert', input: 'import-file', input_format: 'pdf', output_format: 'xlsx' },
+        'export-file': { operation: 'export/url', input: 'convert-to-xlsx' }
+      }
+    });
+
+    job = await waitJobWithTimeout(job.id);
+    assertJobOk(job);
+
+    const exportTask = (job.tasks || []).find(
+      t => t.operation === 'export/url' && t.status === 'finished'
+    );
+    if (!exportTask?.result?.files?.length) throw new Error('export/url sin archivos');
+
     const file = exportTask.result.files[0];
-    const resp = await fetch(file.url);
-    if (!resp.ok) throw new Error(`Descarga falló (${resp.status})`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    const excelBase64 = buf.toString('base64');
+    const { base64, buf } = await downloadToBase64(file.url);
 
     // Parsear TODAS las hojas
     const XLSX = require('xlsx');
@@ -346,46 +284,40 @@ app.post('/extract-pdf-with-processing', async (req, res) => {
     }
 
     success = true;
-    updateMetrics(true, Date.now() - startTime);
-    logRequest(req, startTime, { status: 'SUCCESS' });
+    updateMetrics(true);
+    logRequest(req, startTime, true);
 
     return res.json({
       success: true,
-      excel: excelBase64,
+      excel: base64,
       productos,
       filename: safeName.replace(/\.pdf$/i, '.xlsx'),
       jobId: job.id,
       sheetCount: wb.SheetNames.length,
       stats: {
         totalRows: productos.length,
-        processingTime: `${((Date.now() - startTime)/1000).toFixed(2)}s`,
-        fileSize: `${(fileSize/1024).toFixed(2)} KB`
+        processingTime: `${((Date.now() - startTime)/1000).toFixed(2)}s`
       },
       credits: job.credits || 0
     });
-    
   } catch (err) {
     success = false;
-    updateMetrics(false, Date.now() - startTime);
-    logRequest(req, startTime, { status: 'ERROR' }, err);
+    updateMetrics(false);
+    logRequest(req, startTime, false, err);
     
-    const status = err?.status || err?.statusCode || 500;
+    const status = err?.status || err?.statusCode || 400;
     const isRateLimit = err.message.includes('Rate limit');
-    const isValidation = err.message.includes('PDF') || err.message.includes('Base64');
     
-    return res.status(isRateLimit ? 429 : isValidation ? 400 : status === 422 ? 422 : 500).json({
+    return res.status(isRateLimit ? 429 : status === 422 ? 422 : status).json({
       success: false,
-      error: isRateLimit ? 'Demasiadas peticiones - intenta más tarde' :
-             isValidation ? err.message :
-             status === 422 ? 'CloudConvert 422 - parámetros inválidos' : 
-             'Error procesando PDF',
-      details: err.message || err,
+      error: isRateLimit ? 'Demasiadas peticiones - intenta más tarde' : 
+             err.message || 'Error procesando PDF',
       ...(err.cc_details && { cloudconvert_details: err.cc_details })
     });
   }
 });
 
-// ========== HEALTH CHECK CON MÉTRICAS ==========
+// 3) Health con métricas básicas
 app.get('/health', async (_req, res) => {
   try {
     const user = await cloudConvert.users.me();
@@ -404,20 +336,15 @@ app.get('/health', async (_req, res) => {
         successfulConversions: metrics.successfulConversions,
         failedConversions: metrics.failedConversions,
         successRate: metrics.totalRequests > 0 ? 
-          `${((metrics.successfulConversions / metrics.totalRequests) * 100).toFixed(2)}%` : '0%',
-        averageProcessingTime: `${metrics.averageProcessingTime.toFixed(2)}ms`
+          `${((metrics.successfulConversions / metrics.totalRequests) * 100).toFixed(2)}%` : '0%'
       },
-      config: {
-        maxFileSize: config.maxFileSize,
-        jobTimeout: `${config.jobTimeout/1000}s`,
-        rateLimit: `${MAX_REQUESTS} requests per ${RATE_LIMIT_WINDOW/1000}s`,
-        engine: config.cloudconvert.engine,
-        ocr: config.cloudconvert.ocr
+      rateLimit: {
+        maxRequests: config.rateLimit.max,
+        window: `${config.rateLimit.window/1000}s`
       },
       endpoints: {
         'POST /extract-pdf': 'Excel en base64 + downloadUrl',
-        'POST /extract-pdf-with-processing': 'Excel + JSON de todas las hojas',
-        'GET /metrics': 'Métricas detalladas'
+        'POST /extract-pdf-with-processing': 'Excel + JSON de todas las hojas'
       }
     });
   } catch (e) {
@@ -429,44 +356,20 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-// ========== ENDPOINT DE MÉTRICAS ==========
-app.get('/metrics', (_req, res) => {
-  const uptime = Math.floor((Date.now() - metrics.startTime) / 1000);
-  
-  res.json({
-    timestamp: new Date().toISOString(),
-    uptime: `${uptime}s`,
-    metrics: {
-      ...metrics,
-      successRate: metrics.totalRequests > 0 ? 
-        ((metrics.successfulConversions / metrics.totalRequests) * 100).toFixed(2) + '%' : '0%'
-    },
-    rateLimit: {
-      activeUsers: rateLimit.size,
-      window: `${RATE_LIMIT_WINDOW/1000}s`,
-      maxRequests: MAX_REQUESTS
-    }
-  });
-});
-
-// ========== INICIAR SERVIDOR ==========
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════════════════════════╗
-║   🚀 CloudConvert Microservice ROBUSTO y PROFESIONAL      ║
+║   🚀 CloudConvert Microservice HÍBRIDO                    ║
 ╠════════════════════════════════════════════════════════════╣
 ║   Puerto: ${PORT}                                              ║
-║   Engine: ${config.cloudconvert.engine}                              ║
-║   OCR: ${config.cloudconvert.ocr ? 'Habilitado' : 'Deshabilitado'}                    ║
-║   Rate Limit: ${MAX_REQUESTS} req/${RATE_LIMIT_WINDOW/1000}s                    ║
-║   Max File: ${config.maxFileSize}                              ║
+║   Rate Limit: ${config.rateLimit.max} req/${config.rateLimit.window/1000}s                    ║
+║   Timeout: ${config.jobTimeout/1000}s                              ║
 ╠════════════════════════════════════════════════════════════╣
 ║   Endpoints:                                               ║
 ║   • POST /extract-pdf (Excel base64)                      ║
 ║   • POST /extract-pdf-with-processing (Excel + JSON)      ║
 ║   • GET /health (Estado + métricas)                       ║
-║   • GET /metrics (Métricas detalladas)                    ║
 ╚════════════════════════════════════════════════════════════╝
   `);
 });
