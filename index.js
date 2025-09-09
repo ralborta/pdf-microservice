@@ -534,6 +534,36 @@ async function extractWithGPT4(pdfText, filename = 'documento.pdf') {
   console.log(`[${requestId}] Primeros 500 caracteres del PDF:`);
   console.log(pdfText.substring(0, 500));
   
+  // VERIFICACIÓN CRÍTICA: ¿El texto contiene basura?
+  const esTextoBasura = (
+    pdfText.includes('COSTOS ESTIMADOS') ||
+    pdfText.includes('SOLUCIÓN A CARACTERES BASURA') ||
+    pdfText.includes('CONTROL DE COSTOS') ||
+    pdfText.includes('RESULTADOS GARANTIZADOS')
+  );
+  
+  if (esTextoBasura) {
+    console.error(`[${requestId}] ⚠️ ALERTA: El PDF contiene texto basura!`);
+    console.error(`[${requestId}] Contenido detectado:`, {
+      tieneCOSTOS: pdfText.includes('COSTOS ESTIMADOS'),
+      tieneSOLUCION: pdfText.includes('SOLUCIÓN A CARACTERES'),
+      tieneCONTROL: pdfText.includes('CONTROL DE COSTOS')
+    });
+    
+    // Intentar limpiar el texto
+    const lineas = pdfText.split('\n');
+    const lineasLimpias = lineas.filter(line => {
+      // Filtrar líneas que parecen basura
+      return !line.includes('COSTOS ESTIMADOS') &&
+             !line.includes('SOLUCIÓN A CARACTERES') &&
+             !line.includes('CONTROL DE COSTOS') &&
+             !line.includes('RESULTADOS GARANTIZADOS') &&
+             line.trim().length > 5; // Filtrar líneas muy cortas
+    });
+    pdfText = lineasLimpias.join('\n');
+    console.log(`[${requestId}] Texto limpiado: ${lineas.length} → ${lineasLimpias.length} líneas`);
+  }
+  
   // ========== NUEVO: INTENTAR REGEX PRIMERO ==========
   console.log(`[${requestId}] Intentando extracción con Regex...`);
   const regexResult = tryRegexExtraction(pdfText, filename);
@@ -934,7 +964,137 @@ app.get('/version', (req, res) => {
   });
 });
 
-// 5. Endpoint de test directo para Sermat
+// 5. Endpoint de debug profundo para analizar PDFs
+app.post('/debug-extraction', async (req, res) => {
+  try {
+    const { pdfBase64, filename } = req.body;
+    
+    // Decodificar PDF
+    const base64Data = pdfBase64.replace(/^data:application\/pdf;base64,/, '');
+    const pdfBuffer = Buffer.from(base64Data, 'base64');
+    
+    // Extraer texto
+    const pdfData = await pdf(pdfBuffer);
+    const text = pdfData.text;
+    
+    // ========== ANÁLISIS COMPLETO ==========
+    const lines = text.split('\n');
+    
+    // 1. PRIMERAS LÍNEAS DEL PDF
+    const firstLines = lines.slice(0, 30);
+    
+    // 2. BUSCAR LÍNEAS CON PRECIOS
+    const linesWithPrices = lines.filter(line => 
+      /\$\s*\d+|\d+\.\d{3}|\d+,\d{3}/.test(line)
+    ).slice(0, 10);
+    
+    // 3. BUSCAR LÍNEAS CON CÓDIGOS DE BATERÍA
+    const linesWithCodes = lines.filter(line => 
+      /^(12-\d+|NS\d+|VOLTA|S\d+C\d+|V\d+C\d+)/i.test(line)
+    ).slice(0, 10);
+    
+    // 4. INTENTAR EXTRACCIÓN MANUAL
+    const productosManual = [];
+    for (const line of lines) {
+      // Específicamente buscar el patrón de Sermat
+      const match = line.match(/^(12-\d+|NS\d+|VOLTA\s*\d+)\s+([^\$]+)\$\s*([\d.,]+)/i);
+      if (match) {
+        productosManual.push({
+          linea: line.substring(0, 100),
+          codigo: match[1],
+          descripcion: match[2].trim(),
+          precio: match[3]
+        });
+      }
+    }
+    
+    // 5. VER QUÉ ESTÁ PASANDO CON GPT
+    const sampleText = lines.slice(0, 50).join('\n');
+    
+    // 6. RESPUESTA COMPLETA DE DEBUG
+    res.json({
+      debug: true,
+      filename: filename,
+      analisis: {
+        totalLineas: lines.length,
+        longitudTexto: text.length,
+        
+        // Muestra de contenido
+        primerasLineas: firstLines,
+        
+        // Líneas con precios
+        lineasConPrecios: {
+          cantidad: linesWithPrices.length,
+          muestras: linesWithPrices
+        },
+        
+        // Líneas con códigos
+        lineasConCodigos: {
+          cantidad: linesWithCodes.length,
+          muestras: linesWithCodes
+        },
+        
+        // Extracción manual
+        extraccionManual: {
+          cantidad: productosManual.length,
+          productos: productosManual
+        },
+        
+        // El texto que está viendo GPT
+        textoParaGPT: sampleText.substring(0, 1000),
+        
+        // Verificar si el texto contiene basura
+        contieneBasura: {
+          tieneCOSTOS: text.includes('COSTOS ESTIMADOS'),
+          tieneSOLUCION: text.includes('SOLUCIÓN A CARACTERES'),
+          tieneCONTROL: text.includes('CONTROL DE COSTOS')
+        }
+      }
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// 6. Endpoint para probar con texto limpio de Sermat
+app.post('/test-clean-sermat', async (req, res) => {
+  // Texto REAL de Sermat (copiado del PDF original)
+  const cleanSermatText = `Lista de precios Nº37 1/8/2025
+CODIGO BATERIA TIPO Borne C20 RC C.C.A. Aplicaciones Largo Ancho Alto Precio de Lista
+12-45 12x45 D 38 56 350 Clio mio-palio 8v-Ford ka y Ecosport 1ra gen. 204 174 $ 66.791
+12-55 12x55 D 51 90 430 P 208/308/207/307 - Fiat Argo-Cronos - Toyota 210 190 $ 77.873
+12-65 12X65 D/I 45 70 430 Focus, Gol trend, Voyager, 244 178 $ 75.008
+12-70 12X70 STD 54 83 450 Peugeot-Citroën-Partner-Berlingo-Kangoo 242 190 $ 83.631
+12-80A 12x70 Ref 55 93 550 244 177 $ 93.412
+12-75B 12X75 STD 58 92 480 Blazer-C10- BMW serie 3-Ranger 2012/16 175 $ 89.593
+12-80B 12x75 REF 60 102 530 275 175 178 $ 101.299
+12-90B 12x75 ALTA 72 120 650 Ranger- Sorento - Santa Fe- S10- Hilux 2018> 278 175 190 $ 119.106
+NS40 H Fit D 30 41 260 Honda Fit/ City - Hyundai I10 - Chery QQ 192 122 SIN STOCK`;
+  
+  try {
+    // Llamar a tu función extractWithGPT4 con este texto limpio
+    const result = await extractWithGPT4(cleanSermatText, 'sermat-clean.pdf');
+    
+    res.json({
+      test: 'clean-text',
+      success: result.success,
+      productos: result.data?.productos || [],
+      metodo: result.processing?.metodo,
+      mensaje: 'Probando con texto limpio de Sermat'
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+// 7. Endpoint de test directo para Sermat
 app.post('/test-sermat-direct', (req, res) => {
   try {
     // Texto hardcodeado de Sermat para test directo
@@ -974,6 +1134,8 @@ app.get('/', (req, res) => {
     description: 'Microservicio con GPT-4 para extracción inteligente de productos',
     endpoints: {
       'POST /extract-pdf': 'Extraer productos de PDF (Regex → Preprocesador → GPT-4)',
+      'POST /debug-extraction': 'Debug profundo para analizar PDFs problemáticos',
+      'POST /test-clean-sermat': 'Probar con texto limpio de Sermat',
       'POST /test-regex': 'Probar solo extracción con Regex (gratis)',
       'POST /test-sermat-direct': 'Test directo con texto hardcodeado de Sermat',
       'POST /test-extract': 'Probar extracción con datos de ejemplo',
